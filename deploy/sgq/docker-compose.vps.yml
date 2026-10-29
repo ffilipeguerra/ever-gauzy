@@ -1,0 +1,91 @@
+# Gauzy na VPS da SGQ, atrás do Traefik que já existe (docker compose, não swarm).
+#
+# Enxuto de propósito: banco, API e tela. Sem Redis, worker, OpenSearch, MinIO,
+# Cube e Zipkin, que o compose original traz e a triagem não usa.
+#
+# Um domínio só: o Traefik entrega tudo à tela (nginx), e o nginx da própria tela
+# repassa /api/ para a API pela rede interna. A API e o banco não publicam porta
+# nenhuma no host.
+#
+# Sem `container_name`: os nomes do original (api, db, webapp) podem colidir com
+# o que já roda na VPS. Aqui os contêineres saem como gauzy-api-1, gauzy-db-1...
+#
+# Uso, na pasta deste arquivo:  docker compose -p gauzy -f docker-compose.vps.yml --env-file .env up -d
+
+name: gauzy
+
+x-gauzy-env: &gauzy-env
+  env_file:
+    - .env
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-gauzy}
+      POSTGRES_USER: ${DB_USER:-gauzy}
+      POSTGRES_PASSWORD: ${DB_PASS:?defina DB_PASS no .env}
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - gauzy_db:/var/lib/postgresql/data/
+    mem_limit: 1g
+    networks:
+      - interna
+
+  api:
+    # Só existe a etiqueta `latest` no ghcr.io; fixamos pelo digest para a VPS não
+    # trocar de versão sozinha. Para atualizar, troque o digest e suba de novo.
+    image: ghcr.io/ever-co/gauzy-api@${GAUZY_API_DIGEST:?defina GAUZY_API_DIGEST no .env}
+    <<: *gauzy-env
+    entrypoint: './entrypoint.compose.sh'
+    command: ['node', 'main.js']
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3000/api/health >/dev/null 2>&1 || exit 1']
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 300s
+    mem_limit: 2g
+    networks:
+      - interna
+
+  webapp:
+    image: ghcr.io/ever-co/gauzy-webapp@${GAUZY_WEBAPP_DIGEST:?defina GAUZY_WEBAPP_DIGEST no .env}
+    <<: *gauzy-env
+    entrypoint: './entrypoint.compose.sh'
+    command: ['nginx', '-g', 'daemon off;']
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+    mem_limit: 256m
+    networks:
+      - interna
+      - traefik
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${TRAEFIK_REDE:?defina TRAEFIK_REDE no .env}
+      - traefik.http.routers.gauzy.rule=Host(`${GAUZY_DOMINIO:?defina GAUZY_DOMINIO no .env}`)
+      - traefik.http.routers.gauzy.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}
+      - traefik.http.routers.gauzy.tls=true
+      - traefik.http.routers.gauzy.tls.certresolver=${TRAEFIK_CERTRESOLVER:?defina TRAEFIK_CERTRESOLVER no .env}
+      - traefik.http.services.gauzy.loadbalancer.server.port=4200
+
+volumes:
+  gauzy_db: {}
+
+networks:
+  interna:
+    driver: bridge
+  traefik:
+    external: true
+    name: ${TRAEFIK_REDE}
