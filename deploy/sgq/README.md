@@ -21,52 +21,47 @@ Ficam de fora Redis, worker, OpenSearch, MinIO, Cube e Zipkin, porque a triagem 
 - Não mexe no namespace `atendimento` (Chatwoot) e nunca roda `docker stack deploy`.
 - Segredos só no `.env` da VPS (chmod 600). Nunca no Git, nunca no chat.
 
-## 1. Conferir o Traefik (só leitura)
+## 1. Como o Traefik enxerga o Gauzy (conferido na VPS em 30/10/2026)
 
-```sh
-docker ps --format '{{.Names}} {{.Image}}' | grep -i traefik
-docker service ls 2>/dev/null | grep -i traefik
-docker inspect $(docker ps -q -f name=traefik) --format '{{json .Args}}' 2>/dev/null
-docker network ls
-```
+O Traefik é o do Easypanel (`easypanel-traefik`, Traefik 3.6.7), em swarm. Ele não lê etiquetas de
+contêiner de compose, então o Gauzy segue o mesmo caminho que o sgq-bridge já usa:
 
-Do resultado sai o que vai no `.env`:
+- a tela entra na rede `easypanel` (overlay, attachable) com o apelido `gauzy-webapp`;
+- o arquivo `traefik-gauzy.yaml` vai para `/etc/easypanel/traefik/config/gauzy.yaml` e aponta o
+  domínio para `http://gauzy-webapp:4200/`;
+- entrypoints `http` e `https`, middleware `redirect-to-https` (definido no main.yaml do Easypanel)
+  e certresolver `letsencrypt`, iguais aos do sgq-bridge.
 
-- `TRAEFIK_REDE`: a rede em que o Traefik está.
-- `TRAEFIK_ENTRYPOINT`: o entrypoint HTTPS, em geral `websecure`.
-- `TRAEFIK_CERTRESOLVER`: o nome do resolvedor de certificado.
+O Easypanel só reescreve `main.yaml`; o arquivo próprio sobrevive às regerações dele.
+Não se mexe no `main.yaml` nem no serviço do Traefik.
 
-**Conflito a resolver antes:** se o Traefik roda em modo swarm (`docker service ls` mostra o Traefik),
-ele só lê etiquetas de *serviços* swarm. Contêineres de `docker compose` só aparecem para ele se o
-provedor `docker` (não só o `swarm`) estiver ligado e a rede for `attachable`. Se não estiver, há
-duas saídas, e as duas pedem decisão do Filipe:
-
-1. ligar o provedor `docker` no Traefik, o que mexe na configuração dele;
-2. usar um arquivo de rotas do provedor `file`, apontando para o IP interno da tela.
-
-O DNS do domínio também precisa apontar para o IP da VPS antes de subir, senão o certificado não sai.
+O DNS do domínio (registro A para 179.198.99.14, na i7host) precisa existir antes de copiar o arquivo
+de rota, senão o Let's Encrypt falha a validação.
 
 ## 2. Subir (depois da autorização)
 
 ```sh
 mkdir -p /opt/gauzy && cd /opt/gauzy        # copiar para cá os arquivos desta pasta
-cp .env.vps.example .env && vi .env        # domínio e Traefik
+cp .env.vps.example .env && vi .env        # domínio
 ./gerar-segredos.sh                        # senhas e segredos, sem imprimir
 docker compose -p gauzy -f docker-compose.vps.yml --env-file .env pull
 docker compose -p gauzy -f docker-compose.vps.yml --env-file .env up -d
 docker compose -p gauzy logs -f api        # o primeiro boot cria o banco e semeia; leva alguns minutos
+# com a API saudável e o DNS apontado:
+sed "s/DOMINIO/$(grep '^GAUZY_DOMINIO=' .env | cut -d= -f2)/" traefik-gauzy.yaml > /etc/easypanel/traefik/config/gauzy.yaml
 ./smoke.sh
 ```
 
 ## 3. Desfazer
 
 ```sh
+rm /etc/easypanel/traefik/config/gauzy.yaml                               # tira a rota; o Traefik relê sozinho
 cd /opt/gauzy && docker compose -p gauzy -f docker-compose.vps.yml down   # para e remove os contêineres; o banco fica no volume
 docker volume rm gauzy_gauzy_db                                           # só se for para apagar os dados também
 ```
 
-Nada do que já existe na VPS é alterado: rede interna própria, volume próprio, nenhum arquivo de fora de `/opt/gauzy`.
-O único ponto em comum é a rede do Traefik, onde a tela entra.
+Fora de `/opt/gauzy`, o Gauzy só deixa o arquivo `gauzy.yaml` na pasta de rotas do Traefik.
+O único ponto em comum com o resto da VPS é a rede `easypanel`, onde só a tela entra.
 
 ## 4. Cópia do banco
 

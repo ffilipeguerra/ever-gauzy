@@ -1,0 +1,25 @@
+# Gauzy - rota propria, no mesmo molde do sgq-bridge.yaml. Vai para
+# /etc/easypanel/traefik/config/gauzy.yaml. O EasyPanel so escreve main.yaml,
+# entao este arquivo sobrevive as regeracoes dele. Nada aqui toca no atendimento.
+# Troque DOMINIO pelo subdominio antes de copiar.
+http:
+  routers:
+    http-gauzy:
+      rule: "Host(`DOMINIO`)"
+      entryPoints:
+        - http
+      middlewares:
+        - redirect-to-https
+      service: gauzy
+    https-gauzy:
+      rule: "Host(`DOMINIO`)"
+      entryPoints:
+        - https
+      service: gauzy
+      tls:
+        certResolver: letsencrypt
+  services:
+    gauzy:
+      loadBalancer:
+        servers:
+          - url: "http://gauzy-webapp:4200/"

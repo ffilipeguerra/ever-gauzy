@@ -1,4 +1,10 @@
-# Gauzy na VPS da SGQ, atrás do Traefik que já existe (docker compose, não swarm).
+# Gauzy na VPS da SGQ, atrás do Traefik do Easypanel (docker compose, não swarm).
+#
+# O Traefik do Easypanel roda em swarm e não lê etiquetas de contêiner de compose.
+# Mesmo caminho do sgq-bridge: a tela entra na rede `easypanel` com um apelido, e o
+# arquivo traefik-gauzy.yaml, copiado para /etc/easypanel/traefik/config/, aponta
+# o domínio para esse apelido. O Easypanel só reescreve main.yaml, então o arquivo
+# de rota próprio sobrevive às regerações dele.
 #
 # Enxuto de propósito: banco, API e tela. Sem Redis, worker, OpenSearch, MinIO,
 # Cube e Zipkin, que o compose original traz e a triagem não usa.
@@ -69,16 +75,10 @@ services:
         condition: service_started
     mem_limit: 256m
     networks:
-      - interna
-      - traefik
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=${TRAEFIK_REDE:?defina TRAEFIK_REDE no .env}
-      - traefik.http.routers.gauzy.rule=Host(`${GAUZY_DOMINIO:?defina GAUZY_DOMINIO no .env}`)
-      - traefik.http.routers.gauzy.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}
-      - traefik.http.routers.gauzy.tls=true
-      - traefik.http.routers.gauzy.tls.certresolver=${TRAEFIK_CERTRESOLVER:?defina TRAEFIK_CERTRESOLVER no .env}
-      - traefik.http.services.gauzy.loadbalancer.server.port=4200
+      interna: {}
+      easypanel:
+        aliases:
+          - gauzy-webapp
 
 volumes:
   gauzy_db: {}
@@ -86,6 +86,5 @@ volumes:
 networks:
   interna:
     driver: bridge
-  traefik:
+  easypanel:
     external: true
-    name: ${TRAEFIK_REDE}
